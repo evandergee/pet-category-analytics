@@ -1,0 +1,182 @@
+// =============================================================================
+// DAX measure library  --  pet-food category model
+// -----------------------------------------------------------------------------
+// Create a blank table called  _Measures  (Home > Enter data > name it _Measures,
+// one dummy column, load) and paste each measure below into it
+// (Modeling > New measure). Delete the dummy column when done.
+//
+// Assumes the star from 01_semantic_views.sql:
+//   FactSales[ProductId]  -> DimProduct[ProductId]
+//   FactSales[RetailerId] -> DimRetailer[RetailerId]
+//   FactSales[WeekKey]    -> DimDate[WeekKey]      (DimDate marked as date table on WeekEndingDate)
+// =============================================================================
+
+
+// ---- core -------------------------------------------------------------------
+
+Dollar Sales := SUM ( FactSales[DollarSales] )
+
+Unit Sales := SUM ( FactSales[UnitSales] )
+
+Volume (lbs) := SUM ( FactSales[VolumeSalesLb] )
+
+Base Dollars := SUM ( FactSales[BaseDollars] )
+
+Incremental Dollars := SUM ( FactSales[IncrementalDollars] )
+
+Week Count := DISTINCTCOUNT ( FactSales[WeekKey] )
+
+Price per Unit :=
+DIVIDE ( [Dollar Sales], [Unit Sales] )
+
+Price per Lb :=
+DIVIDE ( [Dollar Sales], [Volume (lbs)] )
+
+Base Price per Lb :=
+DIVIDE (
+    SUMX ( FactSales, FactSales[BasePrice] * FactSales[UnitSales] ),
+    [Volume (lbs)]
+)
+
+
+// ---- market share ----------------------------------------------------------
+// Share of whatever is in the current filter context EXCEPT the product-identity
+// columns -- so a Manufacturer visual shows share of category/total, a Brand
+// visual inside a Category page shows share of that category, etc.
+
+Total Market Dollars :=
+CALCULATE (
+    [Dollar Sales],
+    REMOVEFILTERS ( DimProduct[Manufacturer], DimProduct[ManufacturerGroup],
+                    DimProduct[Brand], DimProduct[SubBrand], DimProduct[PriceTier] )
+)
+
+Dollar Share % :=
+DIVIDE ( [Dollar Sales], [Total Market Dollars] )
+
+Volume Share % :=
+VAR mkt =
+    CALCULATE (
+        [Volume (lbs)],
+        REMOVEFILTERS ( DimProduct[Manufacturer], DimProduct[ManufacturerGroup],
+                        DimProduct[Brand], DimProduct[SubBrand], DimProduct[PriceTier] )
+    )
+RETURN DIVIDE ( [Volume (lbs)], mkt )
+
+Purina Dollar Share % :=
+DIVIDE (
+    CALCULATE ( [Dollar Sales], DimProduct[Manufacturer] = "Nestle Purina" ),
+    [Total Market Dollars]
+)
+
+
+// ---- time intelligence (weekly -> shift 364 days = 52 weeks) --------------
+
+Dollar Sales PY :=
+CALCULATE ( [Dollar Sales], DATEADD ( DimDate[WeekEndingDate], -364, DAY ) )
+
+Dollar Sales YoY % :=
+DIVIDE ( [Dollar Sales] - [Dollar Sales PY], [Dollar Sales PY] )
+
+Volume PY :=
+CALCULATE ( [Volume (lbs)], DATEADD ( DimDate[WeekEndingDate], -364, DAY ) )
+
+Volume YoY % :=
+DIVIDE ( [Volume (lbs)] - [Volume PY], [Volume PY] )
+
+Dollar Share % PY :=
+CALCULATE ( [Dollar Share %], DATEADD ( DimDate[WeekEndingDate], -364, DAY ) )
+
+Share Point Change YoY :=
+[Dollar Share %] - [Dollar Share % PY]      // format as +0.0 pts
+
+Dollar Sales R52W :=
+CALCULATE (
+    [Dollar Sales],
+    DATESINPERIOD ( DimDate[WeekEndingDate], MAX ( DimDate[WeekEndingDate] ), -364, DAY )
+)
+
+
+// ---- distribution & velocity --------------------------------------------
+// ACVDistribution is a per-retailer % ; summed across retailers it is
+// "total distribution points" (TDP). Averaged weekly it is the ACV level.
+
+ACV Points :=
+SUM ( FactSales[ACVDistribution] )
+
+Avg Weekly TDP :=
+DIVIDE ( [ACV Points], [Week Count] )
+
+ACV Weighted Distribution % :=
+AVERAGEX (
+    VALUES ( FactSales[WeekKey] ),
+    CALCULATE ( AVERAGE ( FactSales[ACVDistribution] ) )
+)
+
+Dollars per TDP :=
+DIVIDE ( [Dollar Sales], [ACV Points] )      // $ velocity per point of distribution
+
+Units per TDP :=
+DIVIDE ( [Unit Sales], [ACV Points] )
+
+Avg Weekly TDP PY :=
+CALCULATE ( [Avg Weekly TDP], DATEADD ( DimDate[WeekEndingDate], -364, DAY ) )
+
+TDP Change YoY :=
+[Avg Weekly TDP] - [Avg Weekly TDP PY]
+
+
+// ---- promotion -----------------------------------------------------------
+
+Promo Dollars := SUM ( FactSales[PromoDollars] )
+
+% Dollars on Promo :=
+DIVIDE ( [Promo Dollars], [Dollar Sales] )
+
+% Volume on Promo :=
+DIVIDE (
+    CALCULATE ( [Volume (lbs)], FactSales[AnyPromo] = TRUE () ),
+    [Volume (lbs)]
+)
+
+Promo Weeks :=
+CALCULATE ( DISTINCTCOUNT ( FactSales[WeekKey] ), FactSales[AnyPromo] = TRUE () )
+
+Base Units on Promo :=
+CALCULATE ( SUM ( FactSales[BaseUnits] ), FactSales[AnyPromo] = TRUE () )
+
+Incremental Units on Promo :=
+CALCULATE ( SUM ( FactSales[IncrementalUnits] ), FactSales[AnyPromo] = TRUE () )
+
+Promo Lift % :=
+DIVIDE ( [Incremental Units on Promo], [Base Units on Promo] )
+
+Incremental $ per Promo Week :=
+DIVIDE ( [Incremental Dollars], [Promo Weeks] )
+
+Promo Efficiency :=                          // incremental $ generated per base $ discounted
+DIVIDE (
+    [Incremental Dollars],
+    CALCULATE ( [Base Dollars], FactSales[AnyPromo] = TRUE () )
+)
+
+
+// ---- growth decomposition (measure version of cpg.vGrowthDecomposition) ----
+// Split [Dollar Sales YoY] into distribution / velocity / price effects,
+// evaluated over the latest 52 weeks vs the prior 52.
+
+_TDP_C  := [Avg Weekly TDP]
+_TDP_P  := [Avg Weekly TDP PY]
+_Vel_C  := DIVIDE ( [Unit Sales], [ACV Points] )
+_Vel_P  := CALCULATE ( DIVIDE ( [Unit Sales], [ACV Points] ), DATEADD ( DimDate[WeekEndingDate], -364, DAY ) )
+_Price_C := [Price per Unit]
+_Price_P := CALCULATE ( [Price per Unit], DATEADD ( DimDate[WeekEndingDate], -364, DAY ) )
+
+Distribution Effect :=
+( [_TDP_C] - [_TDP_P] ) * [_Vel_P] * [_Price_P] * [Week Count]
+
+Velocity Effect :=
+[_TDP_C] * ( [_Vel_C] - [_Vel_P] ) * [_Price_P] * [Week Count]
+
+Price Effect :=
+[_TDP_C] * [_Vel_C] * ( [_Price_C] - [_Price_P] ) * [Week Count]
