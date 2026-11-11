@@ -1,5 +1,7 @@
 # Pet-food category analytics (SQL Server + Power BI)
 
+> Built by Evan Gilb, with Claude as an AI coding partner.
+
 Consumer-packaged-goods category analytics on a **synthetic syndicated point-of-sale
 (scanner) dataset** — the kind of weekly product × retailer data a CPG category
 analyst works in (Nielsen / Circana style). SQL analytics layer + a Power BI
